@@ -4,6 +4,10 @@ Open-source, read-only market intelligence for [Predict](https://predict.fun).
 
 Predict Pulse watches probability, 24-hour volume, liquidity, and spread changes; stores historical snapshots in SQLite; and sends deduplicated alerts through Bark or Telegram. It never places orders and does not require wallet access.
 
+![Predict Pulse dashboard](docs/dashboard.png)
+
+Live demo: http://45.32.23.55/pulse/
+
 ## What it does
 
 1. Monitors open Predict markets and their orderbook-derived probability.
