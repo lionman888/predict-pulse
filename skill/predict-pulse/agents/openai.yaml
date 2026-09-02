@@ -1,7 +1,7 @@
 interface:
   display_name: "Predict Pulse"
   short_description: "Deploy and operate Predict market anomaly monitoring"
-  brand_color: "#B8FF3D"
+  brand_color: "#8D63FF"
   default_prompt: "Use $predict-pulse to deploy a read-only Predict market monitor with Bark alerts."
 
 policy:
