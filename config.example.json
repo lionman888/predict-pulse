@@ -7,13 +7,13 @@
   "stats_workers": 6,
   "rate_limit_per_minute": 240,
   "retention_days": 30,
-  "cooldown_minutes": 30,
+  "cooldown_minutes": 20,
   "thresholds": {
-    "probability_points_15m": 5.0,
-    "probability_points_60m": 10.0,
+    "probability_points_15m": 3.0,
+    "probability_points_60m": 6.0,
     "volume24h_delta_usd": 1000,
-    "liquidity_change_percent": 25,
-    "spread_change_points": 5.0
+    "liquidity_change_percent": 30,
+    "spread_change_points": 3.0
   },
   "notifications": {
     "console": true,

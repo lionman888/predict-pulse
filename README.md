@@ -49,6 +49,7 @@ API reference: https://dev.predict.fun/
 ## Operational defaults
 
 - 60-second polling, 50 markets, and approximately 53 API requests per minute.
+- Balanced alerts by default: 3-point moves over 15 minutes, 6-point moves over 1 hour, $1,000 volume increases, 30% liquidity changes, 3-point spread changes, and a 20-minute cooldown.
 - The configuration validator prevents settings that would exceed 90% of the documented API rate limit.
 - SQLite WAL mode, duplicate-snapshot protection, 30-day retention, and per-signal cooldowns are enabled.
 - The monitor and dashboard run as a dedicated `predictpulse` system user. The dashboard uses Gunicorn and never receives the API key.

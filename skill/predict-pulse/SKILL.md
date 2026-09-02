@@ -22,7 +22,7 @@ Use the repository's deterministic installer and commands instead of rewriting t
 ## Trading presets
 
 - Fast/sensitive: 15m probability 3 points, 1h probability 6 points, volume +$500, liquidity ±20%, spread ±3 points, 15-minute cooldown.
-- Balanced: 15m probability 5 points, 1h probability 10 points, volume +$1,000, liquidity ±25%, spread ±5 points, 30-minute cooldown.
+- Balanced (default): 15m probability 3 points, 1h probability 6 points, volume +$1,000, liquidity ±30%, spread ±3 points, 20-minute cooldown.
 - Low-noise: 15m probability 8 points, 1h probability 15 points, volume +$2,500, liquidity ±40%, spread ±8 points, 60-minute cooldown.
 
 Treat the displayed probability as the orderbook midpoint, not an executable quote. The dashboard's ask is the approximate buy price and its bid is the approximate sell price. Never describe midpoint movement alone as guaranteed profit or a trade recommendation.
