@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements.txt ruff bandit pip-audit pytest pyyaml
+      - run: ruff check .
+      - run: bandit -q -r predict_pulse web.py -x predict_pulse/test_pulse.py
+      - run: pip-audit -r requirements.txt
+      - run: PYTHONPATH=. pytest -q
+      - run: bash -n deploy/install.sh
+      - name: Validate skill metadata
+        run: python -c "import pathlib,yaml; p=pathlib.Path('skill/predict-pulse/SKILL.md').read_text(); yaml.safe_load(p.split('---',2)[1]); yaml.safe_load(pathlib.Path('skill/predict-pulse/agents/openai.yaml').read_text())"

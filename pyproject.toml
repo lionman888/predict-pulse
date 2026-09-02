@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "predict-pulse"
+version = "0.1.1"
+description = "Read-only Predict market anomaly monitoring"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Lionman.AI"}]
+dependencies = []
+
+[project.optional-dependencies]
+web = ["Flask>=3.0,<4", "gunicorn>=22,<24"]
+
+[project.scripts]
+predict-pulse = "predict_pulse.pulse:main"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "BLE", "S", "UP"]
+ignore = ["S101"]
+
+[tool.bandit]
+exclude_dirs = ["predict_pulse/test_pulse.py", "tests"]

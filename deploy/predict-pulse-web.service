@@ -7,11 +7,16 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/predict-pulse
 Environment=PREDICT_PULSE_DB=/var/lib/predict-pulse/pulse.sqlite3
-Environment=PORT=8091
-ExecStart=/usr/bin/python3 /opt/predict-pulse/web.py
-Restart=always
+ExecStart=/opt/predict-pulse/.venv/bin/gunicorn --workers 3 --threads 2 --bind 127.0.0.1:8091 --access-logfile - --error-logfile - web:app
+Restart=on-failure
 RestartSec=5
-User=root
+User=predictpulse
+Group=predictpulse
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target

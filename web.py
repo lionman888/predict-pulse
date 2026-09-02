@@ -1,33 +1,52 @@
-#!/usr/bin/env python3
 """Read-only web dashboard for Predict Pulse."""
 
 from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, send_from_directory
-
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("PREDICT_PULSE_DB", "/var/lib/predict-pulse/pulse.sqlite3"))
 WEB_ROOT = ROOT / "web"
 app = Flask(__name__)
+_CACHE_LOCK = threading.Lock()
+_CACHE_VALUE = None
+_CACHE_AT = 0.0
+CACHE_SECONDS = float(os.getenv("DASHBOARD_CACHE_SECONDS", "5"))
+
+
+@app.after_request
+def security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
+        "style-src 'self'; script-src 'self'; frame-ancestors 'none'"
+    )
+    return response
 
 
 def connect():
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA busy_timeout=5000")
+    db.execute("PRAGMA query_only=ON")
     return db
 
 
 def market_url(slug: str) -> str:
-    return f"https://predict.fun/category/{slug}" if slug else "https://predict.fun"
+    safe_slug = urllib.parse.quote(slug, safe="-_")
+    return f"https://predict.fun/category/{safe_slug}" if safe_slug else "https://predict.fun"
 
 
-def dashboard_data():
+def _dashboard_data_uncached():
     with connect() as db:
         latest_time = db.execute("SELECT MAX(captured_at) FROM snapshots").fetchone()[0] or 0
         market_count = db.execute("SELECT COUNT(DISTINCT market_id) FROM snapshots").fetchone()[0]
@@ -44,29 +63,33 @@ def dashboard_data():
         movers = []
         for row in latest:
             old15 = db.execute(
-                "SELECT probability FROM snapshots WHERE market_id=? AND captured_at<=? ORDER BY captured_at DESC LIMIT 1",
+                "SELECT probability FROM snapshots WHERE market_id=? AND captured_at<=? "
+                "ORDER BY captured_at DESC LIMIT 1",
                 (row["market_id"], row["captured_at"] - 900),
             ).fetchone()
             old60 = db.execute(
-                "SELECT probability FROM snapshots WHERE market_id=? AND captured_at<=? ORDER BY captured_at DESC LIMIT 1",
+                "SELECT probability FROM snapshots WHERE market_id=? AND captured_at<=? "
+                "ORDER BY captured_at DESC LIMIT 1",
                 (row["market_id"], row["captured_at"] - 3600),
             ).fetchone()
             p = row["probability"]
             delta15 = (p - old15[0]) * 100 if p is not None and old15 and old15[0] is not None else None
             delta60 = (p - old60[0]) * 100 if p is not None and old60 and old60[0] is not None else None
-            movers.append({
-                "market_id": row["market_id"],
-                "title": row["title"],
-                "question": row["question"],
-                "outcome": row["outcome"],
-                "probability": p,
-                "delta15": delta15,
-                "delta60": delta60,
-                "spread": row["spread"],
-                "volume24h": row["volume24h_usd"],
-                "liquidity": row["liquidity_usd"],
-                "url": market_url(row["category_slug"]),
-            })
+            movers.append(
+                {
+                    "market_id": row["market_id"],
+                    "title": row["title"],
+                    "question": row["question"],
+                    "outcome": row["outcome"],
+                    "probability": p,
+                    "delta15": delta15,
+                    "delta60": delta60,
+                    "spread": row["spread"],
+                    "volume24h": row["volume24h_usd"],
+                    "liquidity": row["liquidity_usd"],
+                    "url": market_url(row["category_slug"]),
+                }
+            )
         movers.sort(key=lambda row: max(abs(row["delta15"] or 0), abs(row["delta60"] or 0)), reverse=True)
         alerts = [dict(row) for row in db.execute("SELECT * FROM alerts ORDER BY created_at DESC LIMIT 30").fetchall()]
     return {
@@ -78,6 +101,16 @@ def dashboard_data():
         "movers": movers[:30],
         "alerts": alerts,
     }
+
+
+def dashboard_data():
+    global _CACHE_AT, _CACHE_VALUE
+    with _CACHE_LOCK:
+        if _CACHE_VALUE is not None and time.monotonic() - _CACHE_AT < CACHE_SECONDS:
+            return _CACHE_VALUE
+        _CACHE_VALUE = _dashboard_data_uncached()
+        _CACHE_AT = time.monotonic()
+        return _CACHE_VALUE
 
 
 @app.get("/")
@@ -93,7 +126,8 @@ def assets(name: str):
 @app.get("/api/health")
 def health():
     payload = dashboard_data()
-    return jsonify({key: payload[key] for key in ("status", "updated_at", "market_count", "snapshot_count", "alert_count")})
+    body = {key: payload[key] for key in ("status", "updated_at", "market_count", "snapshot_count", "alert_count")}
+    return jsonify(body), 200 if payload["status"] == "healthy" else 503
 
 
 @app.get("/favicon.ico")

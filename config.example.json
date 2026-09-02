@@ -1,10 +1,11 @@
 {
-  "api_key_file": "/root/.config/lionman/predict_api_key",
+  "api_key_file": "/etc/predict-pulse/api_key",
   "base_url": "https://api.predict.fun/v1",
   "database": "/var/lib/predict-pulse/pulse.sqlite3",
   "poll_seconds": 60,
   "max_markets": 50,
   "stats_workers": 6,
+  "rate_limit_per_minute": 240,
   "retention_days": 30,
   "cooldown_minutes": 30,
   "thresholds": {
@@ -18,12 +19,11 @@
     "console": true,
     "bark": {
       "enabled": false,
-      "key_env_file": "/root/wc_notify_v2/content_schedule/bark.env",
-      "key_name": "BARK_KEY"
+      "key_file": "/etc/predict-pulse/bark_key"
     },
     "telegram": {
       "enabled": false,
-      "token_file": "/root/.config/lionman/telegram_bot_token",
+      "token_file": "/etc/predict-pulse/telegram_token",
       "chat_id": ""
     }
   }

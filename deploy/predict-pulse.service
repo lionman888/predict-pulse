@@ -7,10 +7,17 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/predict-pulse
 Environment=PYTHONPATH=/opt/predict-pulse
-ExecStart=/usr/bin/python3 -m predict_pulse.pulse --config /etc/predict-pulse/config.json
-Restart=always
+ExecStart=/opt/predict-pulse/.venv/bin/python -m predict_pulse.pulse --config /etc/predict-pulse/config.json
+Restart=on-failure
 RestartSec=10
-User=root
+User=predictpulse
+Group=predictpulse
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/predict-pulse
 
 [Install]
 WantedBy=multi-user.target

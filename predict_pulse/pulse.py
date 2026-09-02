@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Predict Pulse: read-only Predict market snapshots and anomaly alerts."""
 
 from __future__ import annotations
@@ -10,14 +9,62 @@ import os
 import sqlite3
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 BASE_URL = "https://api.predict.fun/v1"
+REQUIRED_THRESHOLDS = {
+    "probability_points_15m",
+    "probability_points_60m",
+    "volume24h_delta_usd",
+    "liquidity_change_percent",
+    "spread_change_points",
+}
+RECOVERABLE_ERRORS = (OSError, RuntimeError, ValueError, KeyError, sqlite3.Error)
+
+
+def open_request(request: urllib.request.Request, timeout: int):
+    """Open only HTTPS URLs, with HTTP allowed for loopback testing."""
+    parsed = urllib.parse.urlparse(request.full_url)
+    loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
+        raise ValueError(f"refusing non-HTTPS outbound URL: {parsed.scheme}://{parsed.netloc}")
+    return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310  # nosec B310
+
+
+def validate_config(config: dict[str, Any]) -> dict[str, Any]:
+    if not config.get("api_key_file") and not config.get("api_key_env"):
+        raise ValueError("api_key_file or api_key_env is required")
+    if not config.get("database"):
+        raise ValueError("database path is required")
+    poll_seconds = int(config.get("poll_seconds", 60))
+    max_markets = int(config.get("max_markets", 50))
+    workers = int(config.get("stats_workers", 6))
+    if poll_seconds < 15:
+        raise ValueError("poll_seconds must be at least 15")
+    if not 1 <= max_markets <= 200:
+        raise ValueError("max_markets must be between 1 and 200")
+    if not 1 <= workers <= 12:
+        raise ValueError("stats_workers must be between 1 and 12")
+    rate_limit = int(config.get("rate_limit_per_minute", 240))
+    requests_per_cycle = max_markets + (max_markets + 19) // 20
+    estimated_rate = requests_per_cycle * 60 / poll_seconds
+    if estimated_rate > rate_limit * 0.9:
+        raise ValueError(
+            f"configuration may exceed API limit: about {estimated_rate:.0f}/{rate_limit} requests per minute"
+        )
+    thresholds = config.get("thresholds") or {}
+    missing = REQUIRED_THRESHOLDS - thresholds.keys()
+    if missing:
+        raise ValueError(f"missing thresholds: {', '.join(sorted(missing))}")
+    for name in REQUIRED_THRESHOLDS:
+        if float(thresholds[name]) < 0:
+            raise ValueError(f"threshold must be non-negative: {name}")
+    return config
 
 
 def read_secret(path: str | None, env_name: str | None = None) -> str:
@@ -48,7 +95,8 @@ def as_float(value: Any) -> float | None:
 
 
 def quote_price(quote: Any) -> float | None:
-    return as_float((quote or {}).get("price")) if isinstance(quote, dict) else None
+    value = as_float((quote or {}).get("price")) if isinstance(quote, dict) else None
+    return value if value is not None and 0 <= value <= 1 else None
 
 
 @dataclass
@@ -79,12 +127,15 @@ class PredictAPI:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        parsed = urllib.parse.urlparse(self.base_url)
+        if parsed.scheme != "https":
+            raise ValueError("Predict API base_url must use HTTPS")
 
     def get(self, path: str, query: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
         url = f"{self.base_url}/{path.lstrip('/')}"
         if query:
             url += "?" + urllib.parse.urlencode(query)
-        request = urllib.request.Request(
+        request = urllib.request.Request(  # noqa: S310 - URL is built from validated HTTPS base_url
             url,
             headers={
                 "accept": "application/json",
@@ -94,10 +145,22 @@ class PredictAPI:
                 "x-api-key": self.api_key,
             },
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            payload = json.load(response)
-            headers = {key.lower(): value for key, value in response.headers.items()}
-        return payload, headers
+        for attempt in range(3):
+            try:
+                with open_request(request, timeout=self.timeout) as response:
+                    payload = json.load(response)
+                    headers = {key.lower(): value for key, value in response.headers.items()}
+                return payload, headers
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {429, 500, 502, 503, 504} or attempt == 2:
+                    raise
+                retry_after = as_float(exc.headers.get("Retry-After")) or 2**attempt
+                time.sleep(min(10.0, retry_after))
+            except (TimeoutError, urllib.error.URLError):
+                if attempt == 2:
+                    raise
+                time.sleep(2**attempt)
+        raise RuntimeError("unreachable retry state")
 
     def markets(self, limit: int) -> tuple[list[dict[str, Any]], dict[str, str]]:
         rows: list[dict[str, Any]] = []
@@ -136,6 +199,7 @@ class Store:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(db_path)
         self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA busy_timeout=5000")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(
             """
@@ -157,6 +221,8 @@ class Store:
             );
             CREATE INDEX IF NOT EXISTS idx_snapshots_market_time
               ON snapshots(market_id, captured_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_snapshots_time
+              ON snapshots(captured_at);
             CREATE TABLE IF NOT EXISTS alerts (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               created_at INTEGER NOT NULL,
@@ -170,6 +236,12 @@ class Store:
             CREATE INDEX IF NOT EXISTS idx_alerts_market_kind_time
               ON alerts(market_id, kind, created_at DESC);
             """
+        )
+        self.db.execute(
+            "DELETE FROM snapshots WHERE id NOT IN (SELECT MAX(id) FROM snapshots GROUP BY market_id, captured_at)"
+        )
+        self.db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_market_time_unique ON snapshots(market_id, captured_at)"
         )
         self.db.commit()
 
@@ -187,14 +259,38 @@ class Store:
         return Snapshot(**{key: row[key] for key in Snapshot.__dataclass_fields__}) if row else None
 
     def insert_snapshots(self, rows: list[Snapshot]):
-        names = list(Snapshot.__dataclass_fields__)
-        sql = f"INSERT INTO snapshots ({','.join(names)}) VALUES ({','.join('?' for _ in names)})"
-        self.db.executemany(sql, [[getattr(row, name) for name in names] for row in rows])
+        self.db.executemany(
+            """
+            INSERT OR REPLACE INTO snapshots(
+              captured_at, market_id, title, question, category_slug, outcome,
+              probability, best_bid, best_ask, spread, volume24h_usd,
+              volume_total_usd, liquidity_usd
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                (
+                    row.captured_at,
+                    row.market_id,
+                    row.title,
+                    row.question,
+                    row.category_slug,
+                    row.outcome,
+                    row.probability,
+                    row.best_bid,
+                    row.best_ask,
+                    row.spread,
+                    row.volume24h_usd,
+                    row.volume_total_usd,
+                    row.liquidity_usd,
+                )
+                for row in rows
+            ],
+        )
         self.db.commit()
 
     def in_cooldown(self, market_id: str, kind: str, after: int) -> bool:
         row = self.db.execute(
-            "SELECT 1 FROM alerts WHERE market_id=? AND kind=? AND created_at>=? LIMIT 1",
+            "SELECT 1 FROM alerts WHERE market_id=? AND kind=? AND created_at>=? AND delivered=1 LIMIT 1",
             (market_id, kind, after),
         ).fetchone()
         return bool(row)
@@ -203,8 +299,13 @@ class Store:
         self.db.execute(
             "INSERT INTO alerts(created_at,market_id,kind,severity,title,body,delivered) VALUES(?,?,?,?,?,?,?)",
             (
-                alert["created_at"], alert["market_id"], alert["kind"], alert["severity"],
-                alert["title"], alert["body"], int(delivered),
+                alert["created_at"],
+                alert["market_id"],
+                alert["kind"],
+                alert["severity"],
+                alert["title"],
+                alert["body"],
+                int(delivered),
             ),
         )
         self.db.commit()
@@ -230,7 +331,7 @@ def probability(outcomes: list[dict[str, Any]]) -> tuple[str, float | None, floa
     ask = quote_price(primary.get("bestAsk"))
     if bid is not None and ask is not None:
         price = (bid + ask) / 2
-        spread = max(0.0, ask - bid)
+        spread = ask - bid if ask >= bid else None
     elif bid is not None:
         price, spread = bid, None
     elif ask is not None:
@@ -246,7 +347,7 @@ def probability(outcomes: list[dict[str, Any]]) -> tuple[str, float | None, floa
         ask = ask if ask is not None else derived_ask
         if bid is not None and ask is not None:
             price = (bid + ask) / 2
-            spread = max(0.0, ask - bid)
+            spread = ask - bid if ask >= bid else None
     return name, price, bid, ask, spread
 
 
@@ -287,33 +388,67 @@ def alert(kind: str, severity: str, row: Snapshot, headline: str, detail: str) -
     }
 
 
-def detect(row: Snapshot, previous: Snapshot | None, baseline15: Snapshot | None, baseline60: Snapshot | None, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+def detect(
+    row: Snapshot,
+    previous: Snapshot | None,
+    baseline15: Snapshot | None,
+    baseline60: Snapshot | None,
+    cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
     thresholds = cfg["thresholds"]
     alerts: list[dict[str, Any]] = []
     if row.probability is not None and baseline15 and baseline15.probability is not None:
         delta = (row.probability - baseline15.probability) * 100
         if abs(delta) >= float(thresholds["probability_points_15m"]):
             direction = "急升" if delta > 0 else "急跌"
-            alerts.append(alert("probability_15m", "high", row, f"概率15分钟{direction} {delta:+.1f}点", f"{row.outcome} 当前约 {row.probability:.1%}"))
+            alerts.append(
+                alert(
+                    "probability_15m",
+                    "high",
+                    row,
+                    f"概率15分钟{direction} {delta:+.1f}点",
+                    f"{row.outcome} 当前约 {row.probability:.1%}",
+                )
+            )
     if row.probability is not None and baseline60 and baseline60.probability is not None:
         delta = (row.probability - baseline60.probability) * 100
         if abs(delta) >= float(thresholds["probability_points_60m"]):
             direction = "上升" if delta > 0 else "下降"
-            alerts.append(alert("probability_60m", "medium", row, f"概率1小时{direction} {delta:+.1f}点", f"{row.outcome} 当前约 {row.probability:.1%}"))
+            alerts.append(
+                alert(
+                    "probability_60m",
+                    "medium",
+                    row,
+                    f"概率1小时{direction} {delta:+.1f}点",
+                    f"{row.outcome} 当前约 {row.probability:.1%}",
+                )
+            )
     if previous and row.volume24h_usd is not None and previous.volume24h_usd is not None:
         delta = row.volume24h_usd - previous.volume24h_usd
         if delta >= float(thresholds["volume24h_delta_usd"]):
-            alerts.append(alert("volume", "medium", row, f"成交量增加 ${delta:,.0f}", f"24小时成交量约 ${row.volume24h_usd:,.0f}"))
+            alerts.append(
+                alert("volume", "medium", row, f"成交量增加 ${delta:,.0f}", f"24小时成交量约 ${row.volume24h_usd:,.0f}")
+            )
     if baseline15:
         change = pct_change(row.liquidity_usd, baseline15.liquidity_usd)
         if change is not None and abs(change) >= float(thresholds["liquidity_change_percent"]):
             direction = "增加" if change > 0 else "下降"
-            alerts.append(alert("liquidity", "medium", row, f"流动性15分钟{direction} {change:+.1f}%", f"当前流动性约 ${row.liquidity_usd:,.0f}"))
+            alerts.append(
+                alert(
+                    "liquidity",
+                    "medium",
+                    row,
+                    f"流动性15分钟{direction} {change:+.1f}%",
+                    f"当前流动性约 ${row.liquidity_usd:,.0f}",
+                )
+            )
         if row.spread is not None and baseline15.spread is not None:
             delta = (row.spread - baseline15.spread) * 100
             if abs(delta) >= float(thresholds["spread_change_points"]):
                 direction = "扩大" if delta > 0 else "收窄"
-                alerts.append(alert("spread", "low", row, f"价差15分钟{direction} {delta:+.1f}点", f"当前价差约 {row.spread:.1%}"))
+                alerts.append(
+                    alert("spread", "low", row, f"价差15分钟{direction} {delta:+.1f}点", f"当前价差约 {row.spread:.1%}")
+                )
     return alerts
 
 
@@ -325,8 +460,10 @@ class Notifier:
     @staticmethod
     def post(url: str, data: dict[str, Any] | None = None) -> None:
         encoded = urllib.parse.urlencode(data).encode() if data else None
-        request = urllib.request.Request(url, data=encoded, headers={"user-agent": "PredictPulse/0.1"})
-        with urllib.request.urlopen(request, timeout=15) as response:
+        request = urllib.request.Request(  # noqa: S310 - open_request validates the scheme
+            url, data=encoded, headers={"user-agent": "PredictPulse/0.1"}
+        )
+        with open_request(request, timeout=15) as response:
             if response.status >= 300:
                 raise RuntimeError(f"notification HTTP {response.status}")
 
@@ -334,32 +471,54 @@ class Notifier:
         print(json.dumps({"alert": item}, ensure_ascii=False), flush=True)
         if self.dry_run:
             return True
-        delivered = False
+        attempted = 0
+        delivered = 0
+        errors: dict[str, str] = {}
         bark = self.cfg.get("bark") or {}
         if bark.get("enabled"):
-            if bark.get("key_env_file"):
-                key = load_env_value(bark["key_env_file"], bark.get("key_name", "BARK_KEY"))
-            else:
-                key = read_secret(bark.get("key_file"), bark.get("key_env"))
-            title = urllib.parse.quote(item["title"], safe="")
-            body = urllib.parse.quote(item["body"], safe="")
-            self.post(f"https://api.day.app/{key}/{title}/{body}?group=PredictPulse")
-            delivered = True
+            attempted += 1
+            try:
+                if bark.get("key_env_file"):
+                    key = load_env_value(bark["key_env_file"], bark.get("key_name", "BARK_KEY"))
+                else:
+                    key = read_secret(bark.get("key_file"), bark.get("key_env"))
+                key_path = urllib.parse.quote(key, safe="")
+                title = urllib.parse.quote(item["title"], safe="")
+                body = urllib.parse.quote(item["body"], safe="")
+                self.post(f"https://api.day.app/{key_path}/{title}/{body}?group=PredictPulse")
+                delivered += 1
+            except (OSError, RuntimeError, ValueError) as exc:
+                errors["bark"] = str(exc)[:160]
         telegram = self.cfg.get("telegram") or {}
         if telegram.get("enabled"):
-            token = read_secret(telegram.get("token_file"), telegram.get("token_env"))
-            self.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                {"chat_id": str(telegram["chat_id"]), "text": f"{item['title']}\n\n{item['body']}", "disable_web_page_preview": "true"},
-            )
-            delivered = True
-        return delivered or bool(self.cfg.get("console", True))
+            attempted += 1
+            try:
+                token = read_secret(telegram.get("token_file"), telegram.get("token_env"))
+                token_path = urllib.parse.quote(token, safe="")
+                self.post(
+                    f"https://api.telegram.org/bot{token_path}/sendMessage",
+                    {
+                        "chat_id": str(telegram["chat_id"]),
+                        "text": f"{item['title']}\n\n{item['body']}",
+                        "disable_web_page_preview": "true",
+                    },
+                )
+                delivered += 1
+            except (OSError, RuntimeError, ValueError) as exc:
+                errors["telegram"] = str(exc)[:160]
+        if errors:
+            print(json.dumps({"notification_errors": errors}, ensure_ascii=False), file=sys.stderr, flush=True)
+        if attempted:
+            return delivered > 0
+        return bool(self.cfg.get("console", True))
 
 
 class Pulse:
     def __init__(self, config: dict[str, Any], dry_run: bool = False):
-        self.config = config
-        self.api = PredictAPI(read_secret(config.get("api_key_file"), config.get("api_key_env")), config.get("base_url", BASE_URL))
+        self.config = validate_config(config)
+        self.api = PredictAPI(
+            read_secret(config.get("api_key_file"), config.get("api_key_env")), config.get("base_url", BASE_URL)
+        )
         self.store = Store(config["database"])
         self.notifier = Notifier(config.get("notifications") or {"console": True}, dry_run=dry_run)
         self.dry_run = dry_run
@@ -375,8 +534,11 @@ class Pulse:
                 market_id = futures[future]
                 try:
                     stats[market_id] = future.result()
-                except Exception as exc:
-                    print(json.dumps({"warning": "stats_failed", "market_id": market_id, "error": str(exc)[:160]}), file=sys.stderr)
+                except RECOVERABLE_ERRORS as exc:
+                    print(
+                        json.dumps({"warning": "stats_failed", "market_id": market_id, "error": str(exc)[:160]}),
+                        file=sys.stderr,
+                    )
                     stats[market_id] = {}
         snapshots = [build_snapshot(row, stats.get(str(row.get("id")), {}), now) for row in markets if row.get("id")]
         candidates: list[dict[str, Any]] = []
@@ -394,8 +556,9 @@ class Pulse:
         delivered = 0
         for item in candidates:
             ok = self.notifier.send(item)
-            self.store.record_alert(item, ok)
-            delivered += int(ok)
+            if not self.dry_run:
+                self.store.record_alert(item, ok)
+                delivered += int(ok)
         return {
             "captured_at": now,
             "markets": len(snapshots),
@@ -412,7 +575,7 @@ class Pulse:
             started = time.monotonic()
             try:
                 print(json.dumps({"cycle": self.collect()}, ensure_ascii=False), flush=True)
-            except Exception as exc:
+            except RECOVERABLE_ERRORS as exc:
                 print(json.dumps({"error": str(exc)[:500]}), file=sys.stderr, flush=True)
                 if once:
                     raise
@@ -422,7 +585,7 @@ class Pulse:
 
 
 def load_config(path: str) -> dict[str, Any]:
-    return json.loads(Path(path).expanduser().read_text())
+    return validate_config(json.loads(Path(path).expanduser().read_text()))
 
 
 def main():
