@@ -17,6 +17,9 @@ Built by [Lionman Labs](https://www.lionmanlabs.top) · [@lionman888888](https:/
 3. Detects unusual volume, liquidity, and spread changes.
 4. Sends cooldown-protected Bark and Telegram alerts.
 5. Provides a live read-only dashboard and a Codex deployment skill.
+6. Supports all-market, category-only, and link-based personal watchlist monitoring.
+
+The public dashboard can be filtered by market category. Predict category links added to “My Watchlist” are stored only in that browser. Private deployments can use the same links as the collector scope, so unrelated markets are neither collected nor pushed to Bark or Telegram.
 
 ## Quick start on Ubuntu
 

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -10,6 +13,8 @@ import urllib.parse
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, send_from_directory
+
+from predict_pulse.pulse import PredictAPI, build_snapshot, read_secret
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("PREDICT_PULSE_DB", "/var/lib/predict-pulse/pulse.sqlite3"))
@@ -19,6 +24,14 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_VALUE = None
 _CACHE_AT = 0.0
 CACHE_SECONDS = float(os.getenv("DASHBOARD_CACHE_SECONDS", "5"))
+CONFIG_PATH = Path(os.getenv("PREDICT_PULSE_CONFIG", "/etc/predict-pulse/config.json"))
+_CATEGORY_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_CATEGORY_FETCHES: list[float] = []
+_CATEGORY_LOCK = threading.Lock()
+
+
+class CategoryRateLimit(RuntimeError):
+    pass
 
 
 @app.after_request
@@ -44,6 +57,53 @@ def connect():
 def market_url(slug: str) -> str:
     safe_slug = urllib.parse.quote(slug, safe="-_")
     return f"https://predict.fun/category/{safe_slug}" if safe_slug else "https://predict.fun"
+
+
+def snapshot_json(row):
+    return {
+        "market_id": row.market_id,
+        "title": row.title,
+        "question": row.question,
+        "probability": row.probability,
+        "best_bid": row.best_bid,
+        "best_ask": row.best_ask,
+        "delta15": None,
+        "delta60": None,
+        "spread": row.spread,
+        "volume24h": row.volume24h_usd,
+        "liquidity": row.liquidity_usd,
+        "segment": row.segment,
+        "category_slug": row.category_slug,
+        "url": market_url(row.category_slug),
+    }
+
+
+def live_category(slug: str) -> list[dict]:
+    now = time.monotonic()
+    with _CATEGORY_LOCK:
+        cached = _CATEGORY_CACHE.get(slug)
+        if cached and now - cached[0] < 60:
+            return cached[1]
+        _CATEGORY_FETCHES[:] = [stamp for stamp in _CATEGORY_FETCHES if now - stamp < 60]
+        if len(_CATEGORY_FETCHES) >= 10:
+            raise CategoryRateLimit("category lookup rate limit reached")
+        _CATEGORY_FETCHES.append(now)
+    config = json.loads(CONFIG_PATH.read_text())
+    api = PredictAPI(
+        read_secret(config.get("api_key_file"), config.get("api_key_env")),
+        config.get("base_url") or "https://api.predict.fun/v1",
+    )
+    markets = api.category(slug)[:50]
+    stats: dict[str, dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, max(1, len(markets)))) as pool:
+        futures = {pool.submit(api.stats, str(row["id"])): str(row["id"]) for row in markets if row.get("id")}
+        for future in concurrent.futures.as_completed(futures):
+            stats[futures[future]] = future.result()
+    captured_at = int(time.time())
+    result = [snapshot_json(build_snapshot(row, stats.get(str(row.get("id")), {}), captured_at)) for row in markets]
+    with _CATEGORY_LOCK:
+        _CATEGORY_CACHE[slug] = (now, result)
+    return result
 
 
 def _dashboard_data_uncached():
@@ -95,6 +155,8 @@ def _dashboard_data_uncached():
                     "spread": row["spread"],
                     "volume24h": row["volume24h_usd"],
                     "liquidity": row["liquidity_usd"],
+                    "segment": row["segment"],
+                    "category_slug": row["category_slug"],
                     "url": market_url(row["category_slug"]),
                 }
             )
@@ -124,6 +186,7 @@ def _dashboard_data_uncached():
         "moved15_count": moved15_count,
         "display_mode": display_mode,
         "movers": visible_markets,
+        "markets": movers,
         "alerts": alerts,
     }
 
@@ -163,6 +226,19 @@ def favicon():
 @app.get("/api/dashboard")
 def dashboard():
     return jsonify(dashboard_data())
+
+
+@app.get("/api/category/<slug>")
+def category(slug: str):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,159}", slug):
+        return jsonify({"error": "invalid category slug"}), 400
+    try:
+        markets = live_category(slug)
+    except CategoryRateLimit:
+        return jsonify({"error": "too many category lookups; retry shortly"}), 429
+    except (OSError, RuntimeError, ValueError, KeyError):
+        return jsonify({"error": "category unavailable"}), 502
+    return jsonify({"slug": slug, "markets": markets}), 200 if markets else 404
 
 
 if __name__ == "__main__":

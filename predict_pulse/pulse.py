@@ -45,14 +45,32 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     poll_seconds = int(config.get("poll_seconds", 60))
     max_markets = int(config.get("max_markets", 50))
     workers = int(config.get("stats_workers", 6))
+    scan_markets = int(config.get("scan_markets", 200))
     if poll_seconds < 15:
         raise ValueError("poll_seconds must be at least 15")
     if not 1 <= max_markets <= 200:
         raise ValueError("max_markets must be between 1 and 200")
+    if not max_markets <= scan_markets <= 500:
+        raise ValueError("scan_markets must be between max_markets and 500")
     if not 1 <= workers <= 12:
         raise ValueError("stats_workers must be between 1 and 12")
     rate_limit = int(config.get("rate_limit_per_minute", 240))
-    requests_per_cycle = max_markets + (max_markets + 19) // 20
+    monitoring = config.get("monitoring") or {"mode": "all"}
+    mode = str(monitoring.get("mode", "all")).lower()
+    if mode not in {"all", "category", "watchlist"}:
+        raise ValueError("monitoring.mode must be all, category, or watchlist")
+    allowed_segments = {"crypto", "esports", "sports", "politics", "other"}
+    segments = {str(value).lower() for value in monitoring.get("segments", [])}
+    if segments - allowed_segments:
+        raise ValueError(f"unsupported monitoring segments: {', '.join(sorted(segments - allowed_segments))}")
+    if mode == "category" and not segments:
+        raise ValueError("category mode requires at least one monitoring segment")
+    if mode == "watchlist" and not monitoring.get("market_urls"):
+        raise ValueError("watchlist mode requires at least one Predict market URL")
+    listing_requests = (scan_markets + 19) // 20 if mode == "category" else (max_markets + 19) // 20
+    if mode == "watchlist":
+        listing_requests = len(monitoring.get("market_urls", []))
+    requests_per_cycle = max_markets + listing_requests
     estimated_rate = requests_per_cycle * 60 / poll_seconds
     if estimated_rate > rate_limit * 0.9:
         raise ValueError(
@@ -115,6 +133,7 @@ class Snapshot:
     volume24h_usd: float | None
     volume_total_usd: float | None
     liquidity_usd: float | None
+    segment: str = "other"
 
     @property
     def market_url(self) -> str:
@@ -193,6 +212,14 @@ class PredictAPI:
         payload, _ = self.get(f"markets/{market_id}/stats")
         return payload.get("data") or {}
 
+    def category(self, slug: str) -> list[dict[str, Any]]:
+        payload, _ = self.get(f"categories/{urllib.parse.quote(slug, safe='-_')}")
+        data = payload.get("data") or {}
+        markets = data.get("markets") or []
+        for market in markets:
+            market.setdefault("categorySlug", slug)
+        return markets
+
 
 class Store:
     def __init__(self, path: str):
@@ -218,7 +245,8 @@ class Store:
               spread REAL,
               volume24h_usd REAL,
               volume_total_usd REAL,
-              liquidity_usd REAL
+              liquidity_usd REAL,
+              segment TEXT NOT NULL DEFAULT 'other'
             );
             CREATE INDEX IF NOT EXISTS idx_snapshots_market_time
               ON snapshots(market_id, captured_at DESC);
@@ -238,6 +266,9 @@ class Store:
               ON alerts(market_id, kind, created_at DESC);
             """
         )
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(snapshots)")}
+        if "segment" not in columns:
+            self.db.execute("ALTER TABLE snapshots ADD COLUMN segment TEXT NOT NULL DEFAULT 'other'")
         self.db.execute(
             "DELETE FROM snapshots WHERE id NOT IN (SELECT MAX(id) FROM snapshots GROUP BY market_id, captured_at)"
         )
@@ -265,8 +296,8 @@ class Store:
             INSERT OR REPLACE INTO snapshots(
               captured_at, market_id, title, question, category_slug, outcome,
               probability, best_bid, best_ask, spread, volume24h_usd,
-              volume_total_usd, liquidity_usd
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+              volume_total_usd, liquidity_usd, segment
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
                 (
@@ -283,6 +314,7 @@ class Store:
                     row.volume24h_usd,
                     row.volume_total_usd,
                     row.liquidity_usd,
+                    row.segment,
                 )
                 for row in rows
             ],
@@ -355,6 +387,57 @@ def suppress_systemic_alerts(items: list[dict[str, Any]], market_count: int) -> 
     return [item for item in items if item["kind"] not in suppressed], suppressed
 
 
+def market_segment(market: dict[str, Any]) -> str:
+    fields = [market.get("marketVariant"), market.get("marketType")]
+    variant = market.get("variantData") or {}
+    if isinstance(variant, dict):
+        fields.append(variant.get("type"))
+    text = " ".join(str(value or "") for value in fields).upper()
+    searchable = f"{market.get('title', '')} {market.get('question', '')}".lower()
+    if "ESPORTS" in text:
+        return "esports"
+    if "CRYPTO" in text or any(word in searchable for word in ("bitcoin", "ethereum", "solana", "bnb", "crypto")):
+        return "crypto"
+    if "SPORTS" in text or any(word in text for word in ("NBA", "FIFA", "SOCCER", "TENNIS")):
+        return "sports"
+    if any(word in searchable for word in ("election", "president", "congress", "senate", "government")):
+        return "politics"
+    return "other"
+
+
+def category_slug(value: str) -> str:
+    parsed = urllib.parse.urlparse(value.strip())
+    if parsed.scheme and parsed.netloc:
+        if not parsed.netloc.lower().endswith("predict.fun"):
+            raise ValueError(f"not a Predict URL: {value}")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2 and parts[0] == "category":
+            return parts[1]
+        raise ValueError(f"unsupported Predict market URL: {value}")
+    return value.strip().strip("/")
+
+
+def choose_markets(api: PredictAPI, config: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    maximum = int(config.get("max_markets", 50))
+    monitoring = config.get("monitoring") or {"mode": "all"}
+    mode = str(monitoring.get("mode", "all")).lower()
+    if mode == "all":
+        return api.markets(maximum)
+    if mode == "category":
+        rows, headers = api.markets(int(config.get("scan_markets", 200)))
+        wanted = {str(value).lower() for value in monitoring.get("segments", [])}
+        return [row for row in rows if market_segment(row) in wanted][:maximum], headers
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in monitoring.get("market_urls", []):
+        for row in api.category(category_slug(str(value))):
+            market_id = str(row.get("id") or "")
+            if market_id and market_id not in seen and row.get("tradingStatus", "OPEN") == "OPEN":
+                rows.append(row)
+                seen.add(market_id)
+    return rows[:maximum], {}
+
+
 def build_snapshot(market: dict[str, Any], stats: dict[str, Any], captured_at: int) -> Snapshot:
     outcome, chance, bid, ask, spread = probability(market.get("outcomes") or [])
     return Snapshot(
@@ -371,6 +454,7 @@ def build_snapshot(market: dict[str, Any], stats: dict[str, Any], captured_at: i
         volume24h_usd=as_float(stats.get("volume24hUsd")),
         volume_total_usd=as_float(stats.get("volumeTotalUsd")),
         liquidity_usd=as_float(stats.get("totalLiquidityUsd")),
+        segment=market_segment(market),
     )
 
 
@@ -529,7 +613,7 @@ class Pulse:
 
     def collect(self) -> dict[str, Any]:
         now = int(time.time())
-        markets, headers = self.api.markets(int(self.config.get("max_markets", 50)))
+        markets, headers = choose_markets(self.api, self.config)
         workers = max(1, min(int(self.config.get("stats_workers", 6)), 12))
         stats: dict[str, dict[str, Any]] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:

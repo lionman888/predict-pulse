@@ -40,6 +40,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(response.json["movers"][0]["best_bid"], 0.49)
         self.assertEqual(response.json["moved15_count"], 1)
         self.assertEqual(response.json["display_mode"], "movers")
+        self.assertEqual(response.json["markets"][0]["segment"], "other")
         self.assertEqual(response.json["movers"][0]["url"], "https://predict.fun/category/slug")
 
     def test_health_returns_503_for_stale_data(self):

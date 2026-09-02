@@ -24,8 +24,61 @@ footer a:hover {
   margin-top: 3px;
 }
 
+.market-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: -4px 0 20px;
+}
+
+.market-controls select,
+.market-controls input,
+.market-controls button {
+  border: 1px solid #2c2739;
+  border-radius: 10px;
+  background: #0e0c14;
+  color: #f6f3ff;
+  font: inherit;
+  font-size: 12px;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.watchlist-add {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+}
+
+.market-controls input {
+  flex: 1;
+  min-width: 210px;
+}
+
+.market-controls button {
+  border-color: #8d63ff;
+  cursor: pointer;
+}
+
+.market-controls button.quiet {
+  border-color: #2c2739;
+  color: #9790a8;
+}
+
+#filter-note {
+  color: #9790a8;
+  font-size: 11px;
+}
+
 @media (max-width: 760px) {
   .table-wrap .empty {
     text-align: left;
+  }
+
+  .market-controls,
+  .watchlist-add {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

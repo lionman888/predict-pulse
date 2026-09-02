@@ -4,6 +4,12 @@
   "database": "/var/lib/predict-pulse/pulse.sqlite3",
   "poll_seconds": 60,
   "max_markets": 50,
+  "scan_markets": 200,
+  "monitoring": {
+    "mode": "all",
+    "segments": [],
+    "market_urls": []
+  },
   "stats_workers": 6,
   "rate_limit_per_minute": 240,
   "retention_days": 30,

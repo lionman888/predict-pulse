@@ -11,13 +11,22 @@ Use the repository's deterministic installer and commands instead of rewriting t
 
 ## Workflow
 
-1. Ask for the trading style first: fast/sensitive, balanced, or low-noise. Use balanced when the user does not choose.
-2. Confirm local-machine or VPS deployment. Prefer VPS for continuous monitoring.
-3. Obtain the Predict API key and notification channel: Bark, Telegram, both, or console only.
-4. Clone this repository and run `deploy/install.sh` with secrets passed as environment variables. Never add secrets to Git or generated public files.
-5. Apply the chosen thresholds to `/etc/predict-pulse/config.json`, validate the estimated API usage, and restart both services.
-6. Run one read-only cycle, test the notification channel, and check `/api/health`.
-7. Report the monitored-market count, snapshot freshness, notification result, dashboard URL, and active thresholds in plain language.
+1. Ask what to monitor: all markets, one or more categories, or a personal watchlist made from Predict market links. Use all markets when the user does not choose.
+2. Ask for the trading style: fast/sensitive, balanced, or low-noise. Use balanced when the user does not choose.
+3. Confirm local-machine or VPS deployment. Prefer VPS for continuous monitoring.
+4. Obtain the Predict API key and notification channel: Bark, Telegram, both, or console only.
+5. Clone this repository and run `deploy/install.sh` with secrets passed as environment variables. Never add secrets to Git or generated public files.
+6. Apply the chosen monitoring mode and thresholds to `/etc/predict-pulse/config.json`, validate the estimated API usage, and restart both services.
+7. Run one read-only cycle, test the notification channel, and check `/api/health`.
+8. Report the monitoring scope, monitored-market count, snapshot freshness, notification result, dashboard URL, and active thresholds in plain language.
+
+## Monitoring modes
+
+- `all`: monitor the configured number of open markets.
+- `category`: set `monitoring.segments` to any combination of `crypto`, `esports`, `sports`, `politics`, and `other`.
+- `watchlist`: paste one or more `https://predict.fun/category/...` links into `monitoring.market_urls`; all open contracts under those links are monitored.
+
+The public dashboard lets visitors filter the collected universe by category and save a personal link watchlist in browser storage. A private deployment applies the chosen mode before alerting, so unrelated markets never reach Bark or Telegram.
 
 ## Trading presets
 

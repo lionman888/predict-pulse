@@ -7,7 +7,10 @@ from predict_pulse.pulse import (
     PredictAPI,
     Snapshot,
     Store,
+    category_slug,
+    choose_markets,
     detect,
+    market_segment,
     probability,
     suppress_systemic_alerts,
     validate_config,
@@ -75,6 +78,34 @@ class PulseTests(unittest.TestCase):
         filtered, suppressed = suppress_systemic_alerts(items, 50)
         self.assertEqual(filtered, [{"kind": "volume"}])
         self.assertEqual(suppressed, {"liquidity"})
+
+    def test_category_slug_accepts_predict_link(self):
+        self.assertEqual(
+            category_slug("https://predict.fun/category/will-bitcoin-hit-100k"),
+            "will-bitcoin-hit-100k",
+        )
+        with self.assertRaisesRegex(ValueError, "not a Predict URL"):
+            category_slug("https://example.com/category/nope")
+
+    def test_market_segment_classification(self):
+        self.assertEqual(market_segment({"variantData": {"type": "ESPORTS_LOL"}}), "esports")
+        self.assertEqual(market_segment({"marketVariant": "CRYPTO_UP_DOWN"}), "crypto")
+        self.assertEqual(market_segment({"marketType": "SPORTS_MONEYLINE"}), "sports")
+
+    def test_watchlist_fetches_category_markets(self):
+        class FakeAPI:
+            def category(self, slug):
+                return [{"id": 1, "categorySlug": slug, "tradingStatus": "OPEN"}]
+
+        cfg = {
+            "max_markets": 10,
+            "monitoring": {
+                "mode": "watchlist",
+                "market_urls": ["https://predict.fun/category/example"],
+            },
+        }
+        markets, _ = choose_markets(FakeAPI(), cfg)
+        self.assertEqual(markets[0]["categorySlug"], "example")
 
     def test_detector_probability_alert(self):
         cfg = {
