@@ -1,0 +1,17 @@
+[Unit]
+Description=Predict Pulse public dashboard
+After=network-online.target predict-pulse.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/predict-pulse
+Environment=PREDICT_PULSE_DB=/var/lib/predict-pulse/pulse.sqlite3
+Environment=PORT=8091
+ExecStart=/usr/bin/python3 /opt/predict-pulse/web.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

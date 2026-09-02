@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Predict Pulse</title>
+  <meta name="description" content="Predict market probability, liquidity and volume intelligence.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <div class="eyebrow"><span class="live"></span> READ-ONLY MARKET INTELLIGENCE</div>
+        <h1>Predict <em>Pulse</em></h1>
+        <p>捕捉概率、交易量、流动性与价差的真实异动。</p>
+      </div>
+      <a class="github" href="https://github.com/lionman888/predict-pulse" target="_blank">GitHub ↗</a>
+    </header>
+
+    <section class="stats" id="stats">
+      <article><span>状态</span><strong id="status">连接中</strong></article>
+      <article><span>监控市场</span><strong id="markets">—</strong></article>
+      <article><span>历史快照</span><strong id="snapshots">—</strong></article>
+      <article><span>有效异动</span><strong id="alerts">—</strong></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div><span class="kicker">LIVE SIGNALS</span><h2>市场异动排行</h2></div>
+        <span id="updated">正在获取数据…</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>市场</th><th>概率</th><th>15分钟</th><th>1小时</th><th>24h成交</th><th>流动性</th></tr></thead>
+          <tbody id="movers"><tr><td colspan="6" class="empty">载入中…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel alerts-panel">
+      <div class="panel-head"><div><span class="kicker">ALERT LOG</span><h2>最近告警</h2></div></div>
+      <div id="alert-list" class="alert-list"><div class="empty">暂无异动告警，正在积累市场基线。</div></div>
+    </section>
+
+    <footer><span>Powered by Predict API</span><span>Read-only · No automated trading</span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

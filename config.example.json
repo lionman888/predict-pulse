@@ -1,0 +1,30 @@
+{
+  "api_key_file": "/root/.config/lionman/predict_api_key",
+  "base_url": "https://api.predict.fun/v1",
+  "database": "/var/lib/predict-pulse/pulse.sqlite3",
+  "poll_seconds": 60,
+  "max_markets": 50,
+  "stats_workers": 6,
+  "retention_days": 30,
+  "cooldown_minutes": 30,
+  "thresholds": {
+    "probability_points_15m": 5.0,
+    "probability_points_60m": 10.0,
+    "volume24h_delta_usd": 1000,
+    "liquidity_change_percent": 25,
+    "spread_change_points": 5.0
+  },
+  "notifications": {
+    "console": true,
+    "bark": {
+      "enabled": false,
+      "key_env_file": "/root/wc_notify_v2/content_schedule/bark.env",
+      "key_name": "BARK_KEY"
+    },
+    "telegram": {
+      "enabled": false,
+      "token_file": "/root/.config/lionman/telegram_bot_token",
+      "chat_id": ""
+    }
+  }
+}
