@@ -6,7 +6,9 @@ Predict Pulse watches probability, 24-hour volume, liquidity, and spread changes
 
 ![Predict Pulse dashboard](docs/dashboard.png)
 
-Live demo: http://45.32.23.55/pulse/
+Live demo: https://www.lionmanlabs.top/predict-pulse/
+
+Built by [Lionman Labs](https://www.lionmanlabs.top) · [@lionman888888](https://x.com/lionman888888)
 
 ## What it does
 

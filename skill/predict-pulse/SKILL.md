@@ -5,6 +5,8 @@ description: Deploy, configure, inspect, or troubleshoot the read-only Predict P
 
 # Predict Pulse
 
+Built by [Lionman Labs](https://www.lionmanlabs.top) · [@lionman888888](https://x.com/lionman888888)
+
 Use the repository's deterministic installer and commands instead of rewriting the monitor.
 
 ## Workflow
