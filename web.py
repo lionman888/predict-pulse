@@ -104,6 +104,16 @@ def _dashboard_data_uncached():
             row for row in movers
             if max(abs(row["delta15"] or 0), abs(row["delta60"] or 0)) >= 0.1
         ]
+        if active_movers:
+            visible_markets = active_movers[:30]
+            display_mode = "movers"
+        else:
+            visible_markets = sorted(
+                movers,
+                key=lambda row: (row["liquidity"] or 0, row["volume24h"] or 0),
+                reverse=True,
+            )[:15]
+            display_mode = "watchlist"
         alerts = [dict(row) for row in db.execute("SELECT * FROM alerts ORDER BY created_at DESC LIMIT 30").fetchall()]
     return {
         "status": "healthy" if latest_time and time.time() - latest_time < 180 else "stale",
@@ -112,7 +122,8 @@ def _dashboard_data_uncached():
         "snapshot_count": snapshot_count,
         "alert_count": alert_count,
         "moved15_count": moved15_count,
-        "movers": active_movers[:30],
+        "display_mode": display_mode,
+        "movers": visible_markets,
         "alerts": alerts,
     }
 

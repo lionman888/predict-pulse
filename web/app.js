@@ -9,6 +9,7 @@ function render(data){
   document.querySelector('#markets').textContent=data.market_count.toLocaleString();
   document.querySelector('#moved15').textContent=data.moved15_count.toLocaleString();
   document.querySelector('#alerts').textContent=data.alert_count.toLocaleString();
+  document.querySelector('#market-heading').textContent=data.display_mode==='watchlist'?'市场观察 · 基线积累中':'市场异动排行';
   document.querySelector('#updated').textContent=`更新于 ${new Date(data.updated_at*1000).toLocaleTimeString('zh-CN')}`;
   document.querySelector('#movers').innerHTML=data.movers.map(m=>`<tr>
     <td><a class="market" href="${escapeHtml(m.url)}" target="_blank" rel="noopener">${escapeHtml(m.title)}</a>${m.question&&m.question!==m.title?`<span class="question">${escapeHtml(m.question)}</span>`:''}</td>
