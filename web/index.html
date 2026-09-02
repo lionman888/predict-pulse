@@ -6,7 +6,7 @@
   <title>Predict Pulse</title>
   <meta name="description" content="Predict market probability, liquidity and volume intelligence.">
   <link rel="stylesheet" href="style.css">
-  <style>footer a{color:inherit;text-decoration:underline;text-decoration-color:#4f4a5b;text-underline-offset:2px}footer a:hover{color:#9790a8}</style>
+  <link rel="stylesheet" href="overrides.css">
 </head>
 <body>
   <main>
@@ -22,8 +22,8 @@
     <section class="stats" id="stats">
       <article><span>状态</span><strong id="status">连接中</strong></article>
       <article><span>监控市场</span><strong id="markets">—</strong></article>
-      <article><span>历史快照</span><strong id="snapshots">—</strong></article>
-      <article><span>有效异动</span><strong id="alerts">—</strong></article>
+      <article><span>15分钟异动 ≥1点</span><strong id="moved15">—</strong></article>
+      <article><span>24小时告警</span><strong id="alerts">—</strong></article>
     </section>
 
     <section class="panel">
@@ -33,8 +33,8 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>市场</th><th>概率</th><th>15分钟</th><th>1小时</th><th>24h成交</th><th>流动性</th></tr></thead>
-          <tbody id="movers"><tr><td colspan="6" class="empty">载入中…</td></tr></tbody>
+          <thead><tr><th>市场</th><th>中间价</th><th>买入 / 卖出</th><th>15分钟</th><th>1小时</th><th>24h成交</th><th>流动性</th></tr></thead>
+          <tbody id="movers"><tr><td colspan="7" class="empty">载入中…</td></tr></tbody>
         </table>
       </div>
     </section>

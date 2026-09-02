@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -329,26 +330,29 @@ def probability(outcomes: list[dict[str, Any]]) -> tuple[str, float | None, floa
     name = str(primary.get("name") or "Outcome 1")
     bid = quote_price(primary.get("bestBid"))
     ask = quote_price(primary.get("bestAsk"))
-    if bid is not None and ask is not None:
-        price = (bid + ask) / 2
-        spread = ask - bid if ask >= bid else None
-    elif bid is not None:
-        price, spread = bid, None
-    elif ask is not None:
-        price, spread = ask, None
-    else:
-        price, spread = None, None
-    if len(outcomes) > 1 and (price is None or spread is None):
+    if len(outcomes) > 1 and (bid is None or ask is None):
         other_bid = quote_price(outcomes[1].get("bestBid"))
         other_ask = quote_price(outcomes[1].get("bestAsk"))
         derived_bid = 1 - other_ask if other_ask is not None else None
         derived_ask = 1 - other_bid if other_bid is not None else None
         bid = bid if bid is not None else derived_bid
         ask = ask if ask is not None else derived_ask
-        if bid is not None and ask is not None:
-            price = (bid + ask) / 2
-            spread = ask - bid if ask >= bid else None
+    if bid is not None and ask is not None and ask >= bid:
+        price = (bid + ask) / 2
+        spread = ask - bid
+    else:
+        price, spread = None, None
     return name, price, bid, ask, spread
+
+
+def suppress_systemic_alerts(items: list[dict[str, Any]], market_count: int) -> tuple[list[dict[str, Any]], set[str]]:
+    """Drop same-signal alert storms that are more likely upstream batch changes than tradable events."""
+    limit = max(5, math.ceil(market_count * 0.25))
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item["kind"]] = counts.get(item["kind"], 0) + 1
+    suppressed = {kind for kind, count in counts.items() if count >= limit}
+    return [item for item in items if item["kind"] not in suppressed], suppressed
 
 
 def build_snapshot(market: dict[str, Any], stats: dict[str, Any], captured_at: int) -> Snapshot:
@@ -550,6 +554,13 @@ class Pulse:
             for item in detect(row, previous, baseline15, baseline60, self.config):
                 if not self.store.in_cooldown(row.market_id, item["kind"], cooldown_after):
                     candidates.append(item)
+        candidates, suppressed = suppress_systemic_alerts(candidates, len(snapshots))
+        if suppressed:
+            print(
+                json.dumps({"warning": "systemic_alert_storm_suppressed", "kinds": sorted(suppressed)}),
+                file=sys.stderr,
+                flush=True,
+            )
         self.store.insert_snapshots(snapshots)
         retention_days = max(1, int(self.config.get("retention_days", 30)))
         pruned = self.store.prune(now - retention_days * 86400)

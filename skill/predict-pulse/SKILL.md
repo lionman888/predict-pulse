@@ -11,11 +11,21 @@ Use the repository's deterministic installer and commands instead of rewriting t
 
 ## Workflow
 
-1. Confirm whether the user wants local-machine or VPS deployment. Prefer VPS for continuous monitoring.
-2. Obtain the user's Predict API key and chosen notification channel: Bark, Telegram, both, or console only.
-3. Clone this repository and run `deploy/install.sh` with secrets passed as environment variables. Never add secrets to Git or generated public files.
-4. Verify both `predict-pulse` and `predict-pulse-web` services, then run one read-only cycle and check `/api/health`.
-5. Report the monitored-market count, snapshot freshness, notification result, and dashboard URL.
+1. Ask for the trading style first: fast/sensitive, balanced, or low-noise. Use balanced when the user does not choose.
+2. Confirm local-machine or VPS deployment. Prefer VPS for continuous monitoring.
+3. Obtain the Predict API key and notification channel: Bark, Telegram, both, or console only.
+4. Clone this repository and run `deploy/install.sh` with secrets passed as environment variables. Never add secrets to Git or generated public files.
+5. Apply the chosen thresholds to `/etc/predict-pulse/config.json`, validate the estimated API usage, and restart both services.
+6. Run one read-only cycle, test the notification channel, and check `/api/health`.
+7. Report the monitored-market count, snapshot freshness, notification result, dashboard URL, and active thresholds in plain language.
+
+## Trading presets
+
+- Fast/sensitive: 15m probability 3 points, 1h probability 6 points, volume +$500, liquidity ±20%, spread ±3 points, 15-minute cooldown.
+- Balanced: 15m probability 5 points, 1h probability 10 points, volume +$1,000, liquidity ±25%, spread ±5 points, 30-minute cooldown.
+- Low-noise: 15m probability 8 points, 1h probability 15 points, volume +$2,500, liquidity ±40%, spread ±8 points, 60-minute cooldown.
+
+Treat the displayed probability as the orderbook midpoint, not an executable quote. The dashboard's ask is the approximate buy price and its bid is the approximate sell price. Never describe midpoint movement alone as guaranteed profit or a trade recommendation.
 
 ## Commands
 

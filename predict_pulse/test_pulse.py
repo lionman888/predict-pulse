@@ -2,7 +2,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from predict_pulse.pulse import Notifier, PredictAPI, Snapshot, Store, detect, probability, validate_config
+from predict_pulse.pulse import (
+    Notifier,
+    PredictAPI,
+    Snapshot,
+    Store,
+    detect,
+    probability,
+    suppress_systemic_alerts,
+    validate_config,
+)
 
 
 def row(at, probability_value=0.5, volume=100, liquidity=1000, spread=0.02):
@@ -54,6 +63,18 @@ class PulseTests(unittest.TestCase):
             ]
         )
         self.assertIsNone(result[4])
+
+    def test_probability_does_not_invent_midpoint_from_one_sided_book(self):
+        result = probability([{"name": "Yes", "bestBid": None, "bestAsk": {"price": 0.60}}])
+        self.assertIsNone(result[1])
+        self.assertIsNone(result[4])
+        self.assertEqual(result[3], 0.60)
+
+    def test_systemic_alert_storm_is_suppressed(self):
+        items = [{"kind": "liquidity"} for _ in range(13)] + [{"kind": "volume"}]
+        filtered, suppressed = suppress_systemic_alerts(items, 50)
+        self.assertEqual(filtered, [{"kind": "volume"}])
+        self.assertEqual(suppressed, {"liquidity"})
 
     def test_detector_probability_alert(self):
         cfg = {

@@ -48,10 +48,11 @@ def market_url(slug: str) -> str:
 
 def _dashboard_data_uncached():
     with connect() as db:
+        now = int(time.time())
         latest_time = db.execute("SELECT MAX(captured_at) FROM snapshots").fetchone()[0] or 0
         market_count = db.execute("SELECT COUNT(DISTINCT market_id) FROM snapshots").fetchone()[0]
         snapshot_count = db.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
-        alert_count = db.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+        alert_count = db.execute("SELECT COUNT(*) FROM alerts WHERE created_at>=?", (now - 86400,)).fetchone()[0]
         latest = db.execute(
             """
             SELECT s.* FROM snapshots s
@@ -63,18 +64,23 @@ def _dashboard_data_uncached():
         movers = []
         for row in latest:
             old15 = db.execute(
-                "SELECT probability FROM snapshots WHERE market_id=? AND captured_at<=? "
+                "SELECT probability,best_bid,best_ask FROM snapshots WHERE market_id=? AND captured_at<=? "
                 "ORDER BY captured_at DESC LIMIT 1",
                 (row["market_id"], row["captured_at"] - 900),
             ).fetchone()
             old60 = db.execute(
-                "SELECT probability FROM snapshots WHERE market_id=? AND captured_at<=? "
+                "SELECT probability,best_bid,best_ask FROM snapshots WHERE market_id=? AND captured_at<=? "
                 "ORDER BY captured_at DESC LIMIT 1",
                 (row["market_id"], row["captured_at"] - 3600),
             ).fetchone()
             p = row["probability"]
-            delta15 = (p - old15[0]) * 100 if p is not None and old15 and old15[0] is not None else None
-            delta60 = (p - old60[0]) * 100 if p is not None and old60 and old60[0] is not None else None
+            current_two_sided = row["best_bid"] is not None and row["best_ask"] is not None
+            old15_two_sided = old15 and old15[1] is not None and old15[2] is not None
+            old60_two_sided = old60 and old60[1] is not None and old60[2] is not None
+            valid15 = p is not None and current_two_sided and old15_two_sided and old15[0] is not None
+            valid60 = p is not None and current_two_sided and old60_two_sided and old60[0] is not None
+            delta15 = (p - old15[0]) * 100 if valid15 else None
+            delta60 = (p - old60[0]) * 100 if valid60 else None
             movers.append(
                 {
                     "market_id": row["market_id"],
@@ -82,6 +88,8 @@ def _dashboard_data_uncached():
                     "question": row["question"],
                     "outcome": row["outcome"],
                     "probability": p,
+                    "best_bid": row["best_bid"],
+                    "best_ask": row["best_ask"],
                     "delta15": delta15,
                     "delta60": delta60,
                     "spread": row["spread"],
@@ -91,6 +99,11 @@ def _dashboard_data_uncached():
                 }
             )
         movers.sort(key=lambda row: max(abs(row["delta15"] or 0), abs(row["delta60"] or 0)), reverse=True)
+        moved15_count = sum(1 for row in movers if abs(row["delta15"] or 0) >= 1.0)
+        active_movers = [
+            row for row in movers
+            if max(abs(row["delta15"] or 0), abs(row["delta60"] or 0)) >= 0.1
+        ]
         alerts = [dict(row) for row in db.execute("SELECT * FROM alerts ORDER BY created_at DESC LIMIT 30").fetchall()]
     return {
         "status": "healthy" if latest_time and time.time() - latest_time < 180 else "stale",
@@ -98,7 +111,8 @@ def _dashboard_data_uncached():
         "market_count": market_count,
         "snapshot_count": snapshot_count,
         "alert_count": alert_count,
-        "movers": movers[:30],
+        "moved15_count": moved15_count,
+        "movers": active_movers[:30],
         "alerts": alerts,
     }
 
