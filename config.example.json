@@ -13,13 +13,22 @@
   "stats_workers": 6,
   "rate_limit_per_minute": 240,
   "retention_days": 30,
-  "cooldown_minutes": 20,
+  "cooldown_minutes": 360,
+  "max_alerts_per_hour": 4,
+  "max_alerts_per_cycle": 2,
   "thresholds": {
-    "probability_points_15m": 3.0,
-    "probability_points_60m": 6.0,
-    "volume24h_delta_usd": 1000,
-    "liquidity_change_percent": 30,
-    "spread_change_points": 3.0
+    "probability_points_15m": 5.0,
+    "probability_points_60m": 10.0,
+    "volume24h_delta_usd": 2500,
+    "liquidity_change_percent": 75,
+    "spread_change_points": 5.0
+  },
+  "quality_filters": {
+    "max_signal_spread": 0.12,
+    "min_liquidity_usd": 1000,
+    "liquidity_min_absolute_change_usd": 10000,
+    "probability_confirmation_ratio": 0.65,
+    "notify_standalone_liquidity": false
   },
   "notifications": {
     "console": true,

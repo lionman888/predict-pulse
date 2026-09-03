@@ -120,7 +120,7 @@ class PulseTests(unittest.TestCase):
         alerts = detect(row(1000, 0.58), row(990, 0.55), row(100, 0.50), None, cfg)
         self.assertIn("probability_15m", [item["kind"] for item in alerts])
 
-    def test_detector_covers_all_signal_types(self):
+    def test_detector_collapses_multiple_signals_to_one_actionable_alert(self):
         cfg = {
             "thresholds": {
                 "probability_points_15m": 5,
@@ -135,7 +135,41 @@ class PulseTests(unittest.TestCase):
         baseline15 = row(3000, 0.50, volume=100, liquidity=1000, spread=0.02)
         baseline60 = row(100, 0.50, volume=100, liquidity=1000, spread=0.02)
         kinds = {item["kind"] for item in detect(current, previous, baseline15, baseline60, cfg)}
-        self.assertEqual(kinds, {"probability_15m", "probability_60m", "volume", "liquidity", "spread"})
+        self.assertEqual(kinds, {"volume"})
+
+    def test_detector_filters_wide_book_probability_noise(self):
+        cfg = {
+            "thresholds": {
+                "probability_points_15m": 5,
+                "probability_points_60m": 10,
+                "volume24h_delta_usd": 1000,
+                "liquidity_change_percent": 25,
+                "spread_change_points": 5,
+            },
+            "quality_filters": {"max_signal_spread": 0.12, "min_liquidity_usd": 1000},
+        }
+        current = row(4000, 0.80, liquidity=5000, spread=0.50)
+        previous = row(3990, 0.79, liquidity=5000, spread=0.48)
+        baseline = row(3000, 0.50, liquidity=5000, spread=0.02)
+        self.assertEqual(detect(current, previous, baseline, baseline, cfg), [])
+
+    def test_detector_requires_absolute_liquidity_change(self):
+        cfg = {
+            "thresholds": {
+                "probability_points_15m": 5,
+                "probability_points_60m": 10,
+                "volume24h_delta_usd": 1000,
+                "liquidity_change_percent": 50,
+                "spread_change_points": 5,
+            },
+            "quality_filters": {
+                "min_liquidity_usd": 100,
+                "liquidity_min_absolute_change_usd": 5000,
+            },
+        }
+        current = row(4000, liquidity=900)
+        baseline = row(3000, liquidity=300)
+        self.assertEqual(detect(current, row(3990), baseline, None, cfg), [])
 
     def test_store_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -168,6 +202,20 @@ class PulseTests(unittest.TestCase):
             item["created_at"] = 1100
             store.record_alert(item, True)
             self.assertTrue(store.in_cooldown("1", "spread", 900))
+
+    def test_probability_alert_kinds_share_one_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(str(Path(directory) / "pulse.sqlite3"))
+            item = {
+                "created_at": 1000,
+                "market_id": "1",
+                "kind": "probability_15m",
+                "severity": "high",
+                "title": "T",
+                "body": "B",
+            }
+            store.record_alert(item, True)
+            self.assertTrue(store.in_cooldown("1", "probability_60m", 900))
 
     def test_config_rejects_rate_limit_overrun(self):
         config = {

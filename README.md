@@ -52,7 +52,9 @@ API reference: https://dev.predict.fun/
 ## Operational defaults
 
 - 60-second polling, 50 markets, and approximately 53 API requests per minute.
-- Balanced alerts by default: 3-point moves over 15 minutes, 6-point moves over 1 hour, $1,000 volume increases, 30% liquidity changes, 3-point spread changes, and a 20-minute cooldown.
+- Balanced alerts by default: 5-point moves over 15 minutes, 10-point moves over 1 hour, $2,500 volume increases, 75% liquidity changes, 5-point spread changes, and a 6-hour per-market cooldown.
+- Probability alerts require a liquid, two-sided book with no more than 12% spread and one-cycle confirmation. Liquidity remains visible and stored, but noisy standalone liquidity alerts are disabled by default and can be enabled explicitly.
+- Duplicate 15-minute/1-hour repricing signals are merged. Category-wide data bursts are suppressed, and delivery is capped at 2 alerts per cycle and 4 per hour.
 - The configuration validator prevents settings that would exceed 90% of the documented API rate limit.
 - SQLite WAL mode, duplicate-snapshot protection, 30-day retention, and per-signal cooldowns are enabled.
 - The monitor and dashboard run as a dedicated `predictpulse` system user. The dashboard uses Gunicorn and never receives the API key.

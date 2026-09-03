@@ -83,6 +83,19 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     for name in REQUIRED_THRESHOLDS:
         if float(thresholds[name]) < 0:
             raise ValueError(f"threshold must be non-negative: {name}")
+    quality = config.get("quality_filters") or {}
+    if not 0 < float(quality.get("max_signal_spread", 0.12)) <= 1:
+        raise ValueError("quality_filters.max_signal_spread must be between 0 and 1")
+    if float(quality.get("min_liquidity_usd", 1000)) < 0:
+        raise ValueError("quality_filters.min_liquidity_usd must be non-negative")
+    if float(quality.get("liquidity_min_absolute_change_usd", 5000)) < 0:
+        raise ValueError("quality_filters.liquidity_min_absolute_change_usd must be non-negative")
+    if int(config.get("cooldown_minutes", 180)) < 1:
+        raise ValueError("cooldown_minutes must be positive")
+    if int(config.get("max_alerts_per_hour", 6)) < 1:
+        raise ValueError("max_alerts_per_hour must be positive")
+    if int(config.get("max_alerts_per_cycle", 3)) < 1:
+        raise ValueError("max_alerts_per_cycle must be positive")
     return config
 
 
@@ -322,11 +335,23 @@ class Store:
         self.db.commit()
 
     def in_cooldown(self, market_id: str, kind: str, after: int) -> bool:
-        row = self.db.execute(
-            "SELECT 1 FROM alerts WHERE market_id=? AND kind=? AND created_at>=? AND delivered=1 LIMIT 1",
-            (market_id, kind, after),
-        ).fetchone()
+        if kind.startswith("probability_"):
+            row = self.db.execute(
+                "SELECT 1 FROM alerts WHERE market_id=? AND kind LIKE 'probability_%' "
+                "AND created_at>=? AND delivered=1 LIMIT 1",
+                (market_id, after),
+            ).fetchone()
+        else:
+            row = self.db.execute(
+                "SELECT 1 FROM alerts WHERE market_id=? AND kind=? AND created_at>=? AND delivered=1 LIMIT 1",
+                (market_id, kind, after),
+            ).fetchone()
         return bool(row)
+
+    def delivered_since(self, after: int) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM alerts WHERE created_at>=? AND delivered=1", (after,)
+        ).fetchone()[0]
 
     def record_alert(self, alert: dict[str, Any], delivered: bool):
         self.db.execute(
@@ -378,13 +403,24 @@ def probability(outcomes: list[dict[str, Any]]) -> tuple[str, float | None, floa
 
 
 def suppress_systemic_alerts(items: list[dict[str, Any]], market_count: int) -> tuple[list[dict[str, Any]], set[str]]:
-    """Drop same-signal alert storms that are more likely upstream batch changes than tradable events."""
-    limit = max(5, math.ceil(market_count * 0.25))
+    """Drop batch-like signal storms globally or inside one Predict category."""
+    global_limit = max(8, math.ceil(market_count * 0.06))
     counts: dict[str, int] = {}
+    category_counts: dict[tuple[str, str], int] = {}
     for item in items:
         counts[item["kind"]] = counts.get(item["kind"], 0) + 1
-    suppressed = {kind for kind, count in counts.items() if count >= limit}
-    return [item for item in items if item["kind"] not in suppressed], suppressed
+        key = (item["kind"], item.get("category_slug") or "")
+        category_counts[key] = category_counts.get(key, 0) + 1
+    suppressed = {kind for kind, count in counts.items() if count >= global_limit}
+    noisy_categories = {key for key, count in category_counts.items() if key[1] and count >= 4}
+    filtered = [
+        item
+        for item in items
+        if item["kind"] not in suppressed
+        and (item["kind"], item.get("category_slug") or "") not in noisy_categories
+    ]
+    labels = suppressed | {f"{kind}@{slug}" for kind, slug in noisy_categories}
+    return filtered, labels
 
 
 def market_segment(market: dict[str, Any]) -> str:
@@ -469,6 +505,7 @@ def alert(kind: str, severity: str, row: Snapshot, headline: str, detail: str) -
     return {
         "created_at": row.captured_at,
         "market_id": row.market_id,
+        "category_slug": row.category_slug,
         "kind": kind,
         "severity": severity,
         "title": f"Predict Pulse｜{headline}",
@@ -484,42 +521,104 @@ def detect(
     cfg: dict[str, Any],
 ) -> list[dict[str, Any]]:
     thresholds = cfg["thresholds"]
+    quality = cfg.get("quality_filters") or {}
+    max_spread = float(quality.get("max_signal_spread", 0.12))
+    min_liquidity = float(quality.get("min_liquidity_usd", 1000))
+    min_liquidity_delta = float(quality.get("liquidity_min_absolute_change_usd", 5000))
+    confirmation_ratio = float(quality.get("probability_confirmation_ratio", 0.65))
     alerts: list[dict[str, Any]] = []
+
+    def sound_book(candidate: Snapshot | None) -> bool:
+        return bool(
+            candidate
+            and candidate.probability is not None
+            and candidate.best_bid is not None
+            and candidate.best_ask is not None
+            and candidate.spread is not None
+            and candidate.spread <= max_spread
+            and (candidate.liquidity_usd or 0) >= min_liquidity
+        )
+
+    def confirmed_probability_move(baseline: Snapshot, threshold: float, delta: float) -> bool:
+        if not sound_book(row) or not sound_book(previous) or not sound_book(baseline):
+            return False
+        previous_delta = (previous.probability - baseline.probability) * 100
+        return previous_delta * delta > 0 and abs(previous_delta) >= threshold * confirmation_ratio
+
+    probability_alerts: list[dict[str, Any]] = []
     if row.probability is not None and baseline15 and baseline15.probability is not None:
         delta = (row.probability - baseline15.probability) * 100
-        if abs(delta) >= float(thresholds["probability_points_15m"]):
+        threshold = float(thresholds["probability_points_15m"])
+        if abs(delta) >= threshold and confirmed_probability_move(baseline15, threshold, delta):
             direction = "急升" if delta > 0 else "急跌"
-            alerts.append(
+            probability_alerts.append(
                 alert(
                     "probability_15m",
                     "high",
                     row,
                     f"概率15分钟{direction} {delta:+.1f}点",
-                    f"{row.outcome} 当前约 {row.probability:.1%}",
+                    f"{row.outcome} 当前约 {row.probability:.1%}｜价差 {row.spread:.1%}｜流动性 ${row.liquidity_usd:,.0f}",
                 )
             )
     if row.probability is not None and baseline60 and baseline60.probability is not None:
         delta = (row.probability - baseline60.probability) * 100
-        if abs(delta) >= float(thresholds["probability_points_60m"]):
+        threshold = float(thresholds["probability_points_60m"])
+        if abs(delta) >= threshold and confirmed_probability_move(baseline60, threshold, delta):
             direction = "上升" if delta > 0 else "下降"
-            alerts.append(
+            probability_alerts.append(
                 alert(
                     "probability_60m",
                     "medium",
                     row,
                     f"概率1小时{direction} {delta:+.1f}点",
-                    f"{row.outcome} 当前约 {row.probability:.1%}",
+                    f"{row.outcome} 当前约 {row.probability:.1%}｜价差 {row.spread:.1%}｜流动性 ${row.liquidity_usd:,.0f}",
                 )
             )
+    # One repricing event should produce one notification, not simultaneous 15m and 60m messages.
+    if probability_alerts:
+        alerts.append(probability_alerts[0])
     if previous and row.volume24h_usd is not None and previous.volume24h_usd is not None:
         delta = row.volume24h_usd - previous.volume24h_usd
         if delta >= float(thresholds["volume24h_delta_usd"]):
             alerts.append(
-                alert("volume", "medium", row, f"成交量增加 ${delta:,.0f}", f"24小时成交量约 ${row.volume24h_usd:,.0f}")
+                alert(
+                    "volume",
+                    "medium",
+                    row,
+                    f"成交量增加 ${delta:,.0f}",
+                    f"24小时成交量约 ${row.volume24h_usd:,.0f}｜流动性 ${row.liquidity_usd or 0:,.0f}",
+                )
             )
     if baseline15:
         change = pct_change(row.liquidity_usd, baseline15.liquidity_usd)
-        if change is not None and abs(change) >= float(thresholds["liquidity_change_percent"]):
+        absolute_change = (
+            abs(row.liquidity_usd - baseline15.liquidity_usd)
+            if row.liquidity_usd is not None and baseline15.liquidity_usd is not None
+            else 0
+        )
+        liquid_enough = max(row.liquidity_usd or 0, baseline15.liquidity_usd or 0) >= min_liquidity
+        previous_change = pct_change(previous.liquidity_usd, baseline15.liquidity_usd) if previous else None
+        previous_absolute_change = (
+            abs(previous.liquidity_usd - baseline15.liquidity_usd)
+            if previous and previous.liquidity_usd is not None and baseline15.liquidity_usd is not None
+            else 0
+        )
+        liquidity_confirmed = bool(
+            previous_change is not None
+            and change * previous_change > 0
+            and abs(previous_change) >= float(thresholds["liquidity_change_percent"]) * confirmation_ratio
+            and previous_absolute_change >= min_liquidity_delta * confirmation_ratio
+        )
+        if (
+            change is not None
+            and abs(change) >= float(thresholds["liquidity_change_percent"])
+            and absolute_change >= min_liquidity_delta
+            and liquid_enough
+            and liquidity_confirmed
+            and sound_book(row)
+            and sound_book(baseline15)
+            and bool(quality.get("notify_standalone_liquidity", False))
+        ):
             direction = "增加" if change > 0 else "下降"
             alerts.append(
                 alert(
@@ -530,14 +629,16 @@ def detect(
                     f"当前流动性约 ${row.liquidity_usd:,.0f}",
                 )
             )
-        if row.spread is not None and baseline15.spread is not None:
+        if sound_book(row) and sound_book(baseline15):
             delta = (row.spread - baseline15.spread) * 100
             if abs(delta) >= float(thresholds["spread_change_points"]):
                 direction = "扩大" if delta > 0 else "收窄"
                 alerts.append(
                     alert("spread", "low", row, f"价差15分钟{direction} {delta:+.1f}点", f"当前价差约 {row.spread:.1%}")
                 )
-    return alerts
+    # Prefer the most actionable explanation when the same market triggers several signals.
+    priority = {"volume": 5, "probability_15m": 4, "probability_60m": 3, "liquidity": 2, "spread": 1}
+    return sorted(alerts, key=lambda item: priority.get(item["kind"], 0), reverse=True)[:1]
 
 
 class Notifier:
@@ -642,6 +743,23 @@ class Pulse:
         if suppressed:
             print(
                 json.dumps({"warning": "systemic_alert_storm_suppressed", "kinds": sorted(suppressed)}),
+                file=sys.stderr,
+                flush=True,
+            )
+        severity_rank = {"high": 3, "medium": 2, "low": 1}
+        kind_rank = {"volume": 5, "probability_15m": 4, "probability_60m": 3, "liquidity": 2, "spread": 1}
+        candidates.sort(
+            key=lambda item: (severity_rank.get(item["severity"], 0), kind_rank.get(item["kind"], 0)),
+            reverse=True,
+        )
+        hourly_limit = int(self.config.get("max_alerts_per_hour", 6))
+        available = max(0, hourly_limit - self.store.delivered_since(now - 3600))
+        cycle_limit = int(self.config.get("max_alerts_per_cycle", 3))
+        limited_count = max(0, len(candidates) - min(cycle_limit, available))
+        candidates = candidates[: min(cycle_limit, available)]
+        if limited_count:
+            print(
+                json.dumps({"warning": "alert_budget_applied", "suppressed_count": limited_count}),
                 file=sys.stderr,
                 flush=True,
             )
